@@ -9,12 +9,9 @@ will save you a lot of nerves.
 
 Author's Telegram channel — subscribe: [@molyanov_blog](https://t.me/+JeJiLYwo9E81NWJi)
 
-> The example images below are in Russian, as on the skill page. The skill itself writes the page
-> in your language.
-
 ## This is how an agent usually writes a plan
 
-![The agent posts a long plan of nested lists in chat, ending with "Your decision on items 1–3?"](docs/images/problem.png)
+![The agent posts a long plan of nested lists in chat, ending with "Your decision on items 1–3?"](docs/images/problem-en.png)
 
 A wall of nested lists that is hard to make sense of.
 
@@ -33,34 +30,34 @@ player.
 Not "webhook and grace period", but what changes for you and your users: how it works now, how it
 will work, and a real-life example.
 
-![Before: a technical plan about webhooks. After: "now" and "after" in plain words with an example](docs/images/plain-words.png)
+![Before: a technical plan about webhooks. After: "now" and "after" in plain words with an example](docs/images/plain-words-en.png)
 
 ### 2. Show, don't tell
 
 Whatever can be shown, the agent shows: a frame, a screenshot, options side by side. Zones are
 marked right on the real frame.
 
-![Before: subtitle position described in words. After: a frame with green and red zones](docs/images/show-not-tell.png)
+![Before: subtitle position described in words. After: a frame with green and red zones](docs/images/show-not-tell-en.png)
 
 ### 3. Everything in one place
 
 Not "file 1 is like this, file 2 is like that", but the picture, the description, and the question
 side by side.
 
-![Before: a list of cover files. After: three covers side by side with a recommendation and an answer field](docs/images/one-place.png)
+![Before: a list of cover files. After: three covers side by side with a recommendation and an answer field](docs/images/one-place-en.png)
 
 ### 4. Short and clear
 
 Not a wall of prompts and details, but the point in three lines. Details on request.
 
-![Before: the full instruction text and a test log. After: what changed for the user in three lines](docs/images/short.png)
+![Before: the full instruction text and a test log. After: what changed for the user in three lines](docs/images/short-en.png)
 
 ### 5. A comment on every proposal
 
 Not "which of these do we agree on?" at the end of a wall of text, but an answer field under each
 item.
 
-![Before: a list of decisions and one question at the end. After: each item with a recommendation and its own answer field](docs/images/comments.png)
+![Before: a list of decisions and one question at the end. After: each item with a recommendation and its own answer field](docs/images/comments-en.png)
 
 ## How to use it
 
