@@ -1,0 +1,144 @@
+# Skill pack release workflow. Copy to .github/workflows/publish-skills.yml in a pack
+# repository and set PACK / UPLOAD_ARCHIVE below.
+#
+# Releases are manual: push to main as often as needed, then run this workflow
+# (Actions → Publish skill pack → Run workflow, or `gh workflow run publish-skills.yml
+# -f environment=staging -f notes="..."`). The version is derived from the commit
+# count of the published commit (v1.0.<count>), so the same commit always gets the
+# same version on staging and production. Owners of a paid pack are notified.
+#
+# - Free pack (public repository): UPLOAD_ARCHIVE=false. GitHub itself serves the
+#   commit archive; only the version, commit and notes are sent. No storage keys here.
+# - Paid pack (private repository): UPLOAD_ARCHIVE=true. The commit archive goes to the
+#   environment bucket first; a stored version is never re-uploaded.
+#
+# Repository secrets: SKILLS_PUBLISH_SECRET_STAGING, STAGING_BASIC_AUTH_USER,
+# STAGING_BASIC_AUTH_PASSWORD (+ SKILLS_PUBLISH_SECRET_PRODUCTION later). Paid packs
+# also: S3_ACCESS_KEY_STAGING, S3_SECRET_KEY_STAGING and variable S3_BUCKET_STAGING
+# (+ *_PRODUCTION for the production bucket).
+name: Publish skill pack
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Site to publish to'
+        type: choice
+        options: [staging, production]
+        default: staging
+      notes:
+        description: 'Что нового (shown on the landing and in the notice)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-skills
+  cancel-in-progress: false
+
+env:
+  PACK: visual-review-page
+  UPLOAD_ARCHIVE: 'false'
+  S3_ENDPOINT: https://s3.ru1.storage.beget.cloud
+  # Beget S3 (Ceph) rejects the newer default aws-cli checksum trailers.
+  AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+  AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve version and notes
+        id: meta
+        env:
+          INPUT_ENVIRONMENT: ${{ inputs.environment }}
+          INPUT_NOTES: ${{ inputs.notes }}
+        run: |
+          set -euo pipefail
+          version="v1.0.$(git rev-list --count HEAD)"
+          printf '%s' "$INPUT_NOTES" > "$RUNNER_TEMP/notes.txt"
+          target="${INPUT_ENVIRONMENT:-staging}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          if [ "$target" = production ]; then echo "site=https://neurozeh.ru" >> "$GITHUB_OUTPUT"; else echo "site=https://dev.neurozeh.ru" >> "$GITHUB_OUTPUT"; fi
+          echo "Publishing $PACK $version to $target"
+
+      - name: Store the archive
+        id: archive
+        if: env.UPLOAD_ARCHIVE == 'true'
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          TARGET: ${{ steps.meta.outputs.target }}
+          KEY_STAGING: ${{ secrets.S3_ACCESS_KEY_STAGING }}
+          SECRET_STAGING: ${{ secrets.S3_SECRET_KEY_STAGING }}
+          BUCKET_STAGING: ${{ vars.S3_BUCKET_STAGING }}
+          KEY_PRODUCTION: ${{ secrets.S3_ACCESS_KEY_PRODUCTION }}
+          SECRET_PRODUCTION: ${{ secrets.S3_SECRET_KEY_PRODUCTION }}
+          BUCKET_PRODUCTION: ${{ vars.S3_BUCKET_PRODUCTION }}
+          AWS_DEFAULT_REGION: ru-1
+        run: |
+          set -euo pipefail
+          # Each environment uses only its own bucket and keys; a missing value fails instead of falling back.
+          if [ "$TARGET" = production ]; then
+            export AWS_ACCESS_KEY_ID="$KEY_PRODUCTION" AWS_SECRET_ACCESS_KEY="$SECRET_PRODUCTION" S3_BUCKET="$BUCKET_PRODUCTION"
+          else
+            export AWS_ACCESS_KEY_ID="$KEY_STAGING" AWS_SECRET_ACCESS_KEY="$SECRET_STAGING" S3_BUCKET="$BUCKET_STAGING"
+          fi
+          : "${AWS_ACCESS_KEY_ID:?missing storage key}" "${AWS_SECRET_ACCESS_KEY:?missing storage secret}" "${S3_BUCKET:?missing bucket}"
+          key="$PACK/$VERSION/$PACK-$VERSION.zip"
+          archive="$RUNNER_TEMP/$PACK-$VERSION.zip"
+          if aws s3api head-object --endpoint-url "$S3_ENDPOINT" --bucket "$S3_BUCKET" --key "$key" >/dev/null 2>&1; then
+            # Published versions are immutable: hash the stored object instead of re-uploading
+            # (Beget S3 does not return custom object metadata).
+            aws s3 cp "s3://$S3_BUCKET/$key" "$archive" --endpoint-url "$S3_ENDPOINT" --only-show-errors
+          else
+            git archive --format=zip --prefix="$PACK/" -o "$archive" HEAD
+            aws s3 cp "$archive" "s3://$S3_BUCKET/$key" --endpoint-url "$S3_ENDPOINT" \
+              --content-type application/zip --only-show-errors
+          fi
+          size=$(stat -c %s "$archive")
+          sha=$(sha256sum "$archive" | cut -d' ' -f1)
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          echo "size=$size" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the version on the site
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          COMMIT: ${{ steps.meta.outputs.commit }}
+          SITE: ${{ steps.meta.outputs.site }}
+          TARGET: ${{ steps.meta.outputs.target }}
+          OBJECT_KEY: ${{ steps.archive.outputs.key }}
+          OBJECT_SIZE: ${{ steps.archive.outputs.size }}
+          OBJECT_SHA256: ${{ steps.archive.outputs.sha256 }}
+          SECRET_STAGING: ${{ secrets.SKILLS_PUBLISH_SECRET_STAGING }}
+          SECRET_PRODUCTION: ${{ secrets.SKILLS_PUBLISH_SECRET_PRODUCTION }}
+          BASIC_USER: ${{ secrets.STAGING_BASIC_AUTH_USER }}
+          BASIC_PASSWORD: ${{ secrets.STAGING_BASIC_AUTH_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ "$TARGET" = production ]; then PUBLISH_SECRET="$SECRET_PRODUCTION"; else PUBLISH_SECRET="$SECRET_STAGING"; fi
+          : "${PUBLISH_SECRET:?missing publish secret}"
+          if [ "$UPLOAD_ARCHIVE" = true ]; then
+            payload=$(jq -n --arg pack "$PACK" --arg version "$VERSION" --rawfile notes "$RUNNER_TEMP/notes.txt" \
+              --arg key "$OBJECT_KEY" --arg size "$OBJECT_SIZE" --arg sha "$OBJECT_SHA256" \
+              '{pack:$pack, version:$version, notes:$notes, object_key:$key, size:($size|tonumber), sha256:$sha}')
+          else
+            payload=$(jq -n --arg pack "$PACK" --arg version "$VERSION" --rawfile notes "$RUNNER_TEMP/notes.txt" --arg commit "$COMMIT" \
+              '{pack:$pack, version:$version, notes:$notes, commit:$commit}')
+          fi
+          auth=()
+          if [ "$TARGET" = staging ]; then auth=(--user "$BASIC_USER:$BASIC_PASSWORD"); fi
+          status=$(curl -sS -o "$RUNNER_TEMP/response.json" -w '%{http_code}' "${auth[@]}" \
+            -H 'Content-Type: application/json' -H "X-Neurozeh-Skills-Secret: $PUBLISH_SECRET" \
+            --data "$payload" "$SITE/wp-json/neurozeh/v1/skills/releases")
+          cat "$RUNNER_TEMP/response.json"; echo
+          [ "$status" = 200 ] || { echo "::error::Site answered HTTP $status"; exit 1; }
